@@ -8,6 +8,8 @@ import tempfile
 from pypdf import PdfReader, PdfWriter
 import json
 from pathlib import Path as PPath
+import shutil
+import re
 
 # Try to import local extractors (optional). They provide `process_pdf` functions.
 try:
@@ -68,10 +70,12 @@ def create_converter_prompt(filename):
         * Include MathJax CDN in `<head>` section
 
     6.  **Images and Figures:**
-        * When you encounter an image, diagram, chart, or figure, insert a placeholder
-        * Use this format: `<div class="image-placeholder">[IMAGE: Brief description of what the image shows]</div>`
-        * Include relevant context like "Figure 1", "Chart showing...", "Diagram of..." etc.
-        * Do NOT attempt to embed or extract the actual image data
+                * When you encounter an image, diagram, chart, or figure, DO NOT embed binary image data.
+                * Instead insert a stable placeholder token exactly in this format:
+                    `[IMAGE_PLACEHOLDER:IMAGE_ID:Short description of the image]`
+                    where `IMAGE_ID` is a short identifier (e.g., `img_1`, `fig_2`) the post-processor will use to match extracted files.
+                * Include relevant context like "Figure 1", "Chart showing...", "Diagram of..." etc.
+                * Do NOT attempt to embed or extract the actual image data
 
     7.  **Standard CSS Template (Use on every page):**
     ```css
@@ -145,6 +149,115 @@ def create_converter_prompt(filename):
 
     **Balance:** Extract accurately while applying good document structure. Maintain perfect consistency in styling across all pages.
     """
+
+def embed_images_inline(output_filepath: Path, manifest_path: Path, images_output_root: Path, pdf_stem: str, page_num: int = None):
+    """
+    Replace placeholder tokens in an HTML file with <figure> tags referencing extracted images.
+
+    - output_filepath: Path to the generated HTML file
+    - manifest_path: Path to the manifest JSON produced by the extractor
+    - images_output_root: root dir where images were extracted
+    - pdf_stem: stem name of the PDF (used for organizing copied images)
+    - page_num: if provided, only embed images for that page (1-indexed)
+    """
+    try:
+        if not manifest_path.exists():
+            return
+        with open(manifest_path, 'r', encoding='utf-8') as mf:
+            manifest = json.load(mf)
+    except Exception as e:
+        print(f"[WARN] Could not load manifest {manifest_path}: {e}")
+        return
+
+    # Collect images for the given page or for whole document
+    images = []
+    if page_num is not None:
+        page_manifest = next((p for p in manifest.get('pages', []) if p.get('page_num') == page_num), None)
+        if page_manifest:
+            images = page_manifest.get('images', []) or []
+    else:
+        for p in manifest.get('pages', []):
+            for img in p.get('images', []):
+                images.append(img)
+
+    if not images:
+        # nothing to embed
+        return
+
+    # Ensure destination dir exists inside output folder
+    dest_dir = output_filepath.parent / 'extracted_images' / pdf_stem
+    try:
+        dest_dir.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        pass
+
+    # Map ids to copied paths and descriptions
+    img_map = {}
+    for img in images:
+        raw_path = img.get('path') or img.get('filename') or ''
+        src_path = Path(raw_path)
+        if not src_path.exists():
+            alt = images_output_root / raw_path
+            if alt.exists():
+                src_path = alt
+        if not src_path.exists():
+            # try using filename only inside images_output_root
+            alt2 = images_output_root / Path(raw_path).name
+            if alt2.exists():
+                src_path = alt2
+        if not src_path.exists():
+            print(f"[WARN] Extracted image file not found: {raw_path}")
+            continue
+        try:
+            dst = dest_dir / src_path.name
+            shutil.copy2(src_path, dst)
+        except Exception as e:
+            print(f"[WARN] Could not copy image {src_path} -> {dst}: {e}")
+            continue
+        rel = os.path.relpath(dst, start=output_filepath.parent).replace(os.sep, '/')
+        img_id = str(img.get('id') or img.get('filename') or src_path.stem)
+        desc = img.get('description') or img.get('caption') or img_id
+        img_map[img_id] = { 'rel': rel, 'desc': desc }
+
+    # Read existing HTML
+    try:
+        with open(output_filepath, 'r', encoding='utf-8') as f:
+            html = f.read()
+    except Exception as e:
+        print(f"[WARN] Could not read HTML to embed images: {e}")
+        return
+
+    # Replace placeholders of the form [IMAGE_PLACEHOLDER:img_1:desc]
+    def _repl(match):
+        iid = match.group(1)
+        # provided desc in placeholder (ignored in favor of manifest desc)
+        entry = img_map.get(iid)
+        if not entry:
+            return match.group(0)
+        return f'<figure><img src="{entry["rel"]}" alt="{entry["desc"]}"/><figcaption>{entry["desc"]}</figcaption></figure>'
+
+    new_html, n = re.subn(r'\[IMAGE_PLACEHOLDER:([^:\]]+):([^\]]*)\]', _repl, html)
+    if n > 0:
+        try:
+            with open(output_filepath, 'w', encoding='utf-8') as f:
+                f.write(new_html)
+            print(f"✅ Replaced {n} image placeholder(s) with actual <figure> tags in {output_filepath.name}")
+            return
+        except Exception as e:
+            print(f"[WARN] Could not write updated HTML after replacing placeholders: {e}")
+
+    # Fallback: append an Extracted Figures section
+    images_html = '\n<hr/>\n<h2>Extracted Figures</h2>\n<div class="extracted-images">\n'
+    for iid, entry in img_map.items():
+        images_html += f'<figure><img src="{entry["rel"]}" alt="{entry["desc"]}"/><figcaption>{entry["desc"]}</figcaption></figure>\n'
+    images_html += '</div>\n'
+    try:
+        with open(output_filepath, 'a', encoding='utf-8') as f:
+            f.write(images_html)
+        print(f"✅ Appended {len(img_map)} extracted image(s) to {output_filepath.name}")
+    except Exception as e:
+        print(f"[WARN] Could not append extracted images to HTML: {e}")
+
 
 def convert_pdf_folder(input_dir, output_dir, force=False, per_page=False):
     """
@@ -276,30 +389,11 @@ def convert_pdf_folder(input_dir, output_dir, force=False, per_page=False):
                 finally:
                     client.files.delete(name=uploaded_file.name)
                     os.unlink(tmp_pdf_path)
-                # If images were extracted earlier for this page, try to embed them
+                # If images were extracted earlier for this page, try to embed them via helper
                 try:
                     manifest_path = images_output_root / f"{pdf_file.stem}_manifest.json"
                     if manifest_path.exists():
-                        with open(manifest_path, 'r', encoding='utf-8') as mf:
-                            manifest = json.load(mf)
-                        # Find images for this page (1-indexed)
-                        page_manifest = next((p for p in manifest.get('pages', []) if p.get('page_num') == page_num + 1), None)
-                        if page_manifest and page_manifest.get('images'):
-                            # Append an extracted images section to the HTML
-                            images_html = '\n<hr/>\n<h2>Extracted Figures</h2>\n<div class="extracted-images">\n'
-                            for img in page_manifest['images']:
-                                img_path = Path(img['path'])
-                                try:
-                                    rel = os.path.relpath(img_path, start=output_filepath.parent)
-                                except Exception:
-                                    rel = img_path.name
-                                desc = img.get('description') or img.get('id') or img.get('filename')
-                                images_html += f'<figure><img src="{rel}" alt="{desc}"/><figcaption>{desc}</figcaption></figure>\n'
-                            images_html += '</div>\n'
-                            # Naive append — put at end of file
-                            with open(output_filepath, 'a', encoding='utf-8') as f:
-                                f.write(images_html)
-                            print(f"  ✅ Embedded {len(page_manifest['images'])} extracted image(s) into HTML")
+                        embed_images_inline(output_filepath, manifest_path, images_output_root, pdf_file.stem, page_num=page_num + 1)
                 except Exception as e:
                     print(f"  [WARN] Could not embed images for page {page_num + 1}: {e}")
         
@@ -367,26 +461,7 @@ def convert_pdf_folder(input_dir, output_dir, force=False, per_page=False):
                 try:
                     manifest_path = images_output_root / f"{pdf_file.stem}_manifest.json"
                     if manifest_path.exists():
-                        with open(manifest_path, 'r', encoding='utf-8') as mf:
-                            manifest = json.load(mf)
-                        all_images = []
-                        for p in manifest.get('pages', []):
-                            for img in p.get('images', []):
-                                all_images.append(img)
-                        if all_images:
-                            images_html = '\n<hr/>\n<h2>Extracted Figures</h2>\n<div class="extracted-images">\n'
-                            for img in all_images:
-                                img_path = Path(img['path'])
-                                try:
-                                    rel = os.path.relpath(img_path, start=output_filepath.parent)
-                                except Exception:
-                                    rel = img_path.name
-                                desc = img.get('description') or img.get('id') or img.get('filename')
-                                images_html += f'<figure><img src="{rel}" alt="{desc}"/><figcaption>{desc}</figcaption></figure>\n'
-                            images_html += '</div>\n'
-                            with open(output_filepath, 'a', encoding='utf-8') as f:
-                                f.write(images_html)
-                            print(f"✅ Embedded {len(all_images)} extracted image(s) into HTML")
+                        embed_images_inline(output_filepath, manifest_path, images_output_root, pdf_file.stem, page_num=None)
                 except Exception as e:
                     print(f"[WARN] Could not embed extracted images into HTML: {e}")
 
