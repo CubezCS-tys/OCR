@@ -1,0 +1,12 @@
+python-dotenv
+google-genai
+pypdf
+
+# Image extraction dependencies
+pymupdf
+opencv-python-headless
+numpy
+pdf2image
+
+# Optional: for advanced image detection (requires detectron2)
+# layoutparser[detectron2]
