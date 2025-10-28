@@ -27,6 +27,12 @@ try:
 except Exception:
     image_extractor_pil = None
 
+# User-provided simple extractor (prefer this if present)
+try:
+    import image_extractor as custom_image_extractor
+except Exception:
+    custom_image_extractor = None
+
 # Load environment variables from a .env file (if present)
 load_dotenv()
 
@@ -191,8 +197,12 @@ def embed_images_inline(output_filepath: Path, manifest_path: Path, images_outpu
     except Exception:
         pass
 
-    # Map ids to copied paths and descriptions
+    # Map ids to copied paths and descriptions. Also build page-indexed lists and filename stems
     img_map = {}
+    images_by_page = {}
+    filename_map = {}
+    all_images_ordered = []
+
     for img in images:
         raw_path = img.get('path') or img.get('filename') or ''
         src_path = Path(raw_path)
@@ -217,7 +227,18 @@ def embed_images_inline(output_filepath: Path, manifest_path: Path, images_outpu
         rel = os.path.relpath(dst, start=output_filepath.parent).replace(os.sep, '/')
         img_id = str(img.get('id') or img.get('filename') or src_path.stem)
         desc = img.get('description') or img.get('caption') or img_id
-        img_map[img_id] = { 'rel': rel, 'desc': desc }
+        entry = { 'rel': rel, 'desc': desc, 'page_num': img.get('page_num') or img.get('page') }
+        img_map[img_id] = entry
+        filename_map[Path(img.get('filename','')).stem] = entry
+        pnum = entry['page_num']
+        if pnum is None:
+            # try to infer page from filename (common pattern)
+            m = re.search(r'page_(\d+)', Path(rel).stem)
+            pnum = int(m.group(1)) if m else None
+            entry['page_num'] = pnum
+        if pnum is not None:
+            images_by_page.setdefault(int(pnum), []).append(entry)
+        all_images_ordered.append(entry)
 
     # Read existing HTML
     try:
@@ -227,16 +248,39 @@ def embed_images_inline(output_filepath: Path, manifest_path: Path, images_outpu
         print(f"[WARN] Could not read HTML to embed images: {e}")
         return
 
-    # Replace placeholders of the form [IMAGE_PLACEHOLDER:img_1:desc]
-    def _repl(match):
-        iid = match.group(1)
-        # provided desc in placeholder (ignored in favor of manifest desc)
-        entry = img_map.get(iid)
-        if not entry:
-            return match.group(0)
-        return f'<figure><img src="{entry["rel"]}" alt="{entry["desc"]}"/><figcaption>{entry["desc"]}</figcaption></figure>'
+    # Replacement counters for ordered fallback
+    page_counters = {p:0 for p in images_by_page.keys()}
+    global_counter = 0
 
-    new_html, n = re.subn(r'\[IMAGE_PLACEHOLDER:([^:\]]+):([^\]]*)\]', _repl, html)
+    # Flexible regex: allow optional surrounding brackets and capture id and desc
+    pattern = re.compile(r"\[?IMAGE_PLACEHOLDER:([^:\]\s]+):([^\]\n<]*)\]?", flags=re.IGNORECASE)
+
+    def _repl(match):
+        nonlocal global_counter
+        iid = match.group(1)
+        # Try exact id match
+        entry = img_map.get(iid)
+        if entry is None:
+            # Try filename stem match
+            entry = filename_map.get(iid)
+        if entry is None:
+            # Try numeric/order mapping if page-specific
+            if page_num is not None and int(page_num) in images_by_page:
+                p = int(page_num)
+                idx = page_counters.get(p, 0)
+                if idx < len(images_by_page[p]):
+                    entry = images_by_page[p][idx]
+                    page_counters[p] = idx + 1
+            # Global fallback: next in ordered list
+            if entry is None and global_counter < len(all_images_ordered):
+                entry = all_images_ordered[global_counter]
+                global_counter += 1
+        if not entry:
+            # No mapping found — leave placeholder intact
+            return match.group(0)
+        return f'<figure><img src="{entry["rel"]}" alt="{entry["desc"]}" loading="lazy"/><figcaption>{entry["desc"]}</figcaption></figure>'
+
+    new_html, n = pattern.subn(_repl, html)
     if n > 0:
         try:
             with open(output_filepath, 'w', encoding='utf-8') as f:
@@ -248,13 +292,13 @@ def embed_images_inline(output_filepath: Path, manifest_path: Path, images_outpu
 
     # Fallback: append an Extracted Figures section
     images_html = '\n<hr/>\n<h2>Extracted Figures</h2>\n<div class="extracted-images">\n'
-    for iid, entry in img_map.items():
-        images_html += f'<figure><img src="{entry["rel"]}" alt="{entry["desc"]}"/><figcaption>{entry["desc"]}</figcaption></figure>\n'
+    for entry in all_images_ordered:
+        images_html += f'<figure><img src="{entry["rel"]}" alt="{entry["desc"]}" loading="lazy"/><figcaption>{entry["desc"]}</figcaption></figure>\n'
     images_html += '</div>\n'
     try:
         with open(output_filepath, 'a', encoding='utf-8') as f:
             f.write(images_html)
-        print(f"✅ Appended {len(img_map)} extracted image(s) to {output_filepath.name}")
+        print(f"✅ Appended {len(all_images_ordered)} extracted image(s) to {output_filepath.name}")
     except Exception as e:
         print(f"[WARN] Could not append extracted images to HTML: {e}")
 
@@ -305,22 +349,31 @@ def convert_pdf_folder(input_dir, output_dir, force=False, per_page=False):
 
         # Optionally run image extraction before LLM processing, so manifests/images exist
         if getattr(convert_pdf_folder, 'extract_images', False):
-            method = getattr(convert_pdf_folder, 'images_method', 'cv')
-            print(f"[INFO] Image extraction requested (method={method})")
-            try:
-                if method == 'cv' and image_extractor_cv is not None:
-                    # image_extractor_cv.process_pdf(pdf_path: Path, output_dir: Path, dpi, score_thresh, force)
-                    image_extractor_cv.process_pdf(pdf_file, images_output_root, dpi=300, score_thresh=0.7, force=force)
-                elif method == 'llm' and image_extractor_llm is not None:
-                    # image_extractor_llm.process_pdf(pdf_path: Path, output_dir: Path, dpi, min_confidence, force)
-                    image_extractor_llm.process_pdf(pdf_file, images_output_root, dpi=300, min_confidence=0.80, force=force)
-                elif method == 'pil' and image_extractor_pil is not None:
-                    # image_extractor_pil.process_pdf(pdf_path: Path, output_dir: Path, dpi, min_confidence, force)
-                    image_extractor_pil.process_pdf(pdf_file, images_output_root, dpi=300, min_confidence=0.80, force=force)
-                else:
-                    print(f"[WARN] Requested image extraction method '{method}' unavailable. Missing module or invalid choice.")
-            except Exception as e:
-                print(f"[WARN] Image extraction failed for {pdf_file.name}: {e}")
+            # Prefer user-provided `image_extractor.py` if present
+            if custom_image_extractor is not None:
+                print(f"[INFO] Using custom image_extractor.py for {pdf_file.name}")
+                try:
+                    # custom extractor returns a manifest dict and writes files
+                    custom_image_extractor.extract_images_from_pdf(str(pdf_file), str(images_output_root))
+                except Exception as e:
+                    print(f"[WARN] custom image_extractor failed for {pdf_file.name}: {e}")
+            else:
+                method = getattr(convert_pdf_folder, 'images_method', 'cv')
+                print(f"[INFO] Image extraction requested (method={method})")
+                try:
+                    if method == 'cv' and image_extractor_cv is not None:
+                        # image_extractor_cv.process_pdf(pdf_path: Path, output_dir: Path, dpi, score_thresh, force)
+                        image_extractor_cv.process_pdf(pdf_file, images_output_root, dpi=300, score_thresh=0.7, force=force)
+                    elif method == 'llm' and image_extractor_llm is not None:
+                        # image_extractor_llm.process_pdf(pdf_path: Path, output_dir: Path, dpi, min_confidence, force)
+                        image_extractor_llm.process_pdf(pdf_file, images_output_root, dpi=300, min_confidence=0.80, force=force)
+                    elif method == 'pil' and image_extractor_pil is not None:
+                        # image_extractor_pil.process_pdf(pdf_path: Path, output_dir: Path, dpi, min_confidence, force)
+                        image_extractor_pil.process_pdf(pdf_file, images_output_root, dpi=300, min_confidence=0.80, force=force)
+                    else:
+                        print(f"[WARN] Requested image extraction method '{method}' unavailable. Missing module or invalid choice.")
+                except Exception as e:
+                    print(f"[WARN] Image extraction failed for {pdf_file.name}: {e}")
 
         if per_page:
             # Per-page processing: split PDF and process each page individually
