@@ -227,6 +227,12 @@ def embed_images_inline(output_filepath: Path, manifest_path: Path, images_outpu
         rel = os.path.relpath(dst, start=output_filepath.parent).replace(os.sep, '/')
         img_id = str(img.get('id') or img.get('filename') or src_path.stem)
         desc = img.get('description') or img.get('caption') or img_id
+        # Strip auto-generated extractor captions like "Image extracted from page 16 (index 0)"
+        try:
+            if isinstance(desc, str) and re.search(r'Image extracted from page', desc, flags=re.IGNORECASE):
+                desc = ''
+        except Exception:
+            pass
         entry = { 'rel': rel, 'desc': desc, 'page_num': img.get('page_num') or img.get('page') }
         img_map[img_id] = entry
         filename_map[Path(img.get('filename','')).stem] = entry
@@ -278,7 +284,12 @@ def embed_images_inline(output_filepath: Path, manifest_path: Path, images_outpu
         if not entry:
             # No mapping found — leave placeholder intact
             return match.group(0)
-        return f'<figure><img src="{entry["rel"]}" alt="{entry["desc"]}" loading="lazy"/><figcaption>{entry["desc"]}</figcaption></figure>'
+        # If description is empty or auto-caption was stripped, omit figcaption
+        desc_val = entry.get('desc') or ''
+        if desc_val:
+            return f'<figure><img src="{entry["rel"]}" alt="{desc_val}" loading="lazy"/><figcaption>{desc_val}</figcaption></figure>'
+        else:
+            return f'<figure><img src="{entry["rel"]}" alt="" loading="lazy"/></figure>'
 
     new_html, n = pattern.subn(_repl, html)
     if n > 0:
@@ -293,7 +304,11 @@ def embed_images_inline(output_filepath: Path, manifest_path: Path, images_outpu
     # Fallback: append an Extracted Figures section
     images_html = '\n<hr/>\n<h2>Extracted Figures</h2>\n<div class="extracted-images">\n'
     for entry in all_images_ordered:
-        images_html += f'<figure><img src="{entry["rel"]}" alt="{entry["desc"]}" loading="lazy"/><figcaption>{entry["desc"]}</figcaption></figure>\n'
+        desc_val = entry.get('desc') or ''
+        if desc_val:
+            images_html += f'<figure><img src="{entry["rel"]}" alt="{desc_val}" loading="lazy"/><figcaption>{desc_val}</figcaption></figure>\n'
+        else:
+            images_html += f'<figure><img src="{entry["rel"]}" alt="" loading="lazy"/></figure>\n'
     images_html += '</div>\n'
     try:
         with open(output_filepath, 'a', encoding='utf-8') as f:
