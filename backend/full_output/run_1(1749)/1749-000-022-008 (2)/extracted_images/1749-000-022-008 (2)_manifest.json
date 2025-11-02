@@ -68,7 +68,7 @@
       "images": [
         {
           "filename": "1749-000-022-008 (2)_page_016_img_1.jpeg",
-          "path": "extracted_images/1749-000-022-008 (2)_page_016_img_1.jpeg",
+          "path": "/tmp/pdf_e2e_vr1sp1d5/extracted_images/1749-000-022-008 (2)_page_016_img_1.jpeg",
           "id": "img_16_1",
           "description": "Image extracted from page 16 (index 0)"
         }
@@ -79,7 +79,7 @@
       "images": [
         {
           "filename": "1749-000-022-008 (2)_page_017_img_1.png",
-          "path": "extracted_images/1749-000-022-008 (2)_page_017_img_1.png",
+          "path": "/tmp/pdf_e2e_vr1sp1d5/extracted_images/1749-000-022-008 (2)_page_017_img_1.png",
           "id": "img_17_1",
           "description": "Image extracted from page 17 (index 0)"
         }

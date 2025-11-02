@@ -2,6 +2,8 @@ import fitz
 import os
 import json
 from pathlib import Path
+from PIL import Image
+import io
 
 
 def extract_images_from_pdf(pdf_path: str, output_dir: str) -> dict:
@@ -35,6 +37,35 @@ def extract_images_from_pdf(pdf_path: str, output_dir: str) -> dict:
             base_image = doc.extract_image(xref)
             image_data = base_image.get('image')
             image_extension = base_image.get('ext', 'png')
+
+            # Quick content-based filtering: skip near-uniform/solid images (likely decorative boxes)
+            try:
+                pil_im = Image.open(io.BytesIO(image_data)).convert('RGB')
+            except Exception:
+                pil_im = None
+
+            keep = True
+            if pil_im is not None:
+                w,h = pil_im.size
+                area = max(1, w*h)
+                # small images are often icons/decoration; skip very small ones
+                if w < 16 or h < 16:
+                    keep = False
+
+                # compute simple brightness/variance test
+                stat = Image.Image.getextrema(pil_im)
+                # faster test: convert to grayscale and count non-black pixels
+                gray = pil_im.convert('L')
+                hist = gray.histogram()
+                nonblack = sum(hist[1:])
+                # If less than 0.5% of pixels are non-black, treat as solid/empty and skip
+                if nonblack / area < 0.005:
+                    keep = False
+
+            if not keep:
+                # skip writing this image file
+                # still record that an image was seen but not saved
+                continue
 
             filename = f"{pdf_stem}_page_{page_num + 1:03d}_img_{img_index + 1}.{image_extension}"
             filepath = output_dir_p / filename

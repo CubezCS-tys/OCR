@@ -11,23 +11,7 @@ from pathlib import Path as PPath
 import shutil
 import re
 
-# Try to import local extractors (optional). They provide `process_pdf` functions.
-try:
-    import image_extractor_cv
-except Exception:
-    image_extractor_cv = None
-
-try:
-    import image_extractor_llm
-except Exception:
-    image_extractor_llm = None
-
-try:
-    import image_extractor_pil
-except Exception:
-    image_extractor_pil = None
-
-# User-provided simple extractor (prefer this if present)
+# User-provided image extractor: prefer `image_extractor.py` in the repo
 try:
     import image_extractor as custom_image_extractor
 except Exception:
@@ -152,6 +136,7 @@ def create_converter_prompt(filename):
         * Include the exact CSS and MathJax configuration above
         * Extract ALL content from the page - ensure completeness
         * Output ONLY the HTML - no explanations or markdown code blocks
+        * Before outputting, double-check that all guidelines have been followed, and that there are no errors or omissions.
 
     **Balance:** Extract accurately while applying good document structure. Maintain perfect consistency in styling across all pages.
     """
@@ -364,31 +349,16 @@ def convert_pdf_folder(input_dir, output_dir, force=False, per_page=False):
 
         # Optionally run image extraction before LLM processing, so manifests/images exist
         if getattr(convert_pdf_folder, 'extract_images', False):
-            # Prefer user-provided `image_extractor.py` if present
+            # Only support the project's `image_extractor.py` implementation (user-provided)
             if custom_image_extractor is not None:
                 print(f"[INFO] Using custom image_extractor.py for {pdf_file.name}")
                 try:
-                    # custom extractor returns a manifest dict and writes files
+                    # custom extractor should export extract_images_from_pdf(pdf_path, output_dir)
                     custom_image_extractor.extract_images_from_pdf(str(pdf_file), str(images_output_root))
                 except Exception as e:
                     print(f"[WARN] custom image_extractor failed for {pdf_file.name}: {e}")
             else:
-                method = getattr(convert_pdf_folder, 'images_method', 'cv')
-                print(f"[INFO] Image extraction requested (method={method})")
-                try:
-                    if method == 'cv' and image_extractor_cv is not None:
-                        # image_extractor_cv.process_pdf(pdf_path: Path, output_dir: Path, dpi, score_thresh, force)
-                        image_extractor_cv.process_pdf(pdf_file, images_output_root, dpi=300, score_thresh=0.7, force=force)
-                    elif method == 'llm' and image_extractor_llm is not None:
-                        # image_extractor_llm.process_pdf(pdf_path: Path, output_dir: Path, dpi, min_confidence, force)
-                        image_extractor_llm.process_pdf(pdf_file, images_output_root, dpi=300, min_confidence=0.80, force=force)
-                    elif method == 'pil' and image_extractor_pil is not None:
-                        # image_extractor_pil.process_pdf(pdf_path: Path, output_dir: Path, dpi, min_confidence, force)
-                        image_extractor_pil.process_pdf(pdf_file, images_output_root, dpi=300, min_confidence=0.80, force=force)
-                    else:
-                        print(f"[WARN] Requested image extraction method '{method}' unavailable. Missing module or invalid choice.")
-                except Exception as e:
-                    print(f"[WARN] Image extraction failed for {pdf_file.name}: {e}")
+                print(f"[WARN] --extract-images requested but no local 'image_extractor.py' found; skipping image extraction for {pdf_file.name}.")
 
         if per_page:
             # Per-page processing: split PDF and process each page individually
@@ -546,16 +516,14 @@ if __name__ == "__main__":
     parser.add_argument("--output_dir", default="output_html", help="Path to the folder where HTML files will be saved (default: output_html).")
     parser.add_argument("--force", action="store_true", help="Force re-processing of all PDFs, even if output HTML already exists.")
     parser.add_argument("--per-page", action="store_true", help="Process each PDF page separately, creating one HTML file per page.")
-    parser.add_argument("--extract-images", action="store_true", help="Run image extraction and save images to disk (uses installed extractor modules).")
-    parser.add_argument("--images-method", choices=["cv","llm","pil"], default="cv", help="Which image extraction method to use when --extract-images is set (cv=layoutparser, llm=LLM coordinate detection, pil=PIL cropping with LLM coords).")
+    parser.add_argument("--extract-images", action="store_true", help="Run image extraction and save images to disk (uses local image_extractor.py).")
     parser.add_argument("--images-output", default="extracted_images", help="Directory to save extracted images/manifests (default: extracted_images)")
     
     args = parser.parse_args()
     
-    # Pass image extraction options through environment of convert function
+    # Pass image extraction option through environment of convert function
     # Monkeypatch via attributes on the function (lightweight approach)
     convert_pdf_folder.extract_images = args.extract_images
-    convert_pdf_folder.images_method = args.images_method
     convert_pdf_folder.images_output = args.images_output
 
     convert_pdf_folder(args.input_dir, args.output_dir, force=args.force, per_page=args.per_page)
