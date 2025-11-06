@@ -58,6 +58,10 @@ def main():
     parser.add_argument('--extract-images', action='store_true', help='Run image extraction step (recommended)')
     parser.add_argument('--verbose', action='store_true', help='Stream verbose output from subprocesses (main.py, pandoc)')
     parser.add_argument('--force', action='store_true', help='Force re-processing')
+    parser.add_argument('--per-page', action='store_true', help='Force per-page processing (automatic for PDFs > 20 pages)')
+    parser.add_argument('--max-workers', type=int, default=3, help='Number of concurrent API calls (default: 3, safe for rate limits)')
+    parser.add_argument('--requests-per-minute', type=int, default=10, help='API rate limit in requests per minute (default: 10)')
+    parser.add_argument('--seed', type=int, default=None, help='Random seed for deterministic LLM outputs (optional)')
 
     args = parser.parse_args()
 
@@ -78,6 +82,16 @@ def main():
         print(f"\n=== Processing {pdf_path.name} ===")
         # Create per-document output folder
         doc_out = outroot / pdf_path.stem
+        
+        # Skip if already converted (unless --force flag is set)
+        if not args.force and doc_out.exists():
+            # Check if the output folder contains the expected HTML file
+            expected_html = doc_out / (pdf_path.stem + '.html')
+            if expected_html.exists():
+                print(f"  ⏭️  Skipping {pdf_path.name} — already converted (output exists: {doc_out})")
+                print(f"      Use --force to re-process this file")
+                continue
+        
         doc_out.mkdir(parents=True, exist_ok=True)
 
         # Use a fresh temp workspace per PDF
@@ -101,16 +115,30 @@ def main():
                 opts.append('--extract-images')
                 opts += ['--images-output', str(tmp_images_output)]
 
+            # Add max-workers and rate limiting for concurrent processing
+            opts += ['--max-workers', str(args.max_workers)]
+            opts += ['--requests-per-minute', str(args.requests_per_minute)]
+            
+            # Add seed if provided (for deterministic outputs)
+            if args.seed is not None:
+                opts += ['--seed', str(args.seed)]
+            
+            # Pass verbose flag to main.py so ensure_html_lang_dir() shows debug output
+            if args.verbose:
+                opts.append('--verbose')
+
             # Decide whether to run per-page (safer for large PDFs / API limits)
-            per_page = False
+            per_page = args.per_page  # Force per-page if user requested
             num_pages = None
-            try:
-                reader = PdfReader(str(pdf_path))
-                num_pages = len(reader.pages)
-                if num_pages and num_pages > 20:
-                    per_page = True
-            except Exception:
-                num_pages = None
+            if not per_page:
+                # Auto-enable for PDFs > 20 pages
+                try:
+                    reader = PdfReader(str(pdf_path))
+                    num_pages = len(reader.pages)
+                    if num_pages and num_pages > 20:
+                        per_page = True
+                except Exception:
+                    num_pages = None
 
             if per_page:
                 opts.append('--per-page')
@@ -135,20 +163,125 @@ def main():
 
             # If we processed per-page, combine page HTMLs into a single document HTML
             if per_page:
-                page_files = sorted(tmp_output_html.glob(f"{pdf_path.stem}_page_*.html"))
+                # Natural sort by page number (extract digits from filename)
+                def page_sort_key(path):
+                    import re
+                    match = re.search(r'_page_(\d+)', path.stem)
+                    return int(match.group(1)) if match else 0
+                
+                page_files = sorted(tmp_output_html.glob(f"{pdf_path.stem}_page_*.html"), key=page_sort_key)
                 if page_files:
                     head = ''
-                    bodies = []
+                    page_divs = []  # Store complete page divs with their own direction
                     head_re = re.compile(r'(?is)<head.*?>(.*?)</head>')
                     body_re = re.compile(r'(?is)<body.*?>(.*?)</body>')
+                    html_tag_re = re.compile(r'(?is)<html([^>]*)>')
+                    
+                    # Default to first page's lang/dir for the document wrapper
+                    document_lang = 'en'
+                    document_dir = 'ltr'
+                    
                     for i, pf in enumerate(page_files):
-                        txt = pf.read_text(encoding='utf-8')
+                        # Try multiple encodings to handle problematic characters
+                        txt = None
+                        for encoding in ['utf-8', 'utf-8-sig', 'latin-1', 'cp1252']:
+                            try:
+                                txt = pf.read_text(encoding=encoding)
+                                break
+                            except UnicodeDecodeError:
+                                continue
+                        
+                        if txt is None:
+                            # Last resort: read as binary and decode with errors='replace'
+                            txt = pf.read_bytes().decode('utf-8', errors='replace')
+                            print(f"  ⚠️  Warning: Had to use error replacement for {pf.name}")
+                        
+                        # Extract lang/dir for THIS page
+                        page_lang = None
+                        page_dir = None
+                        html_match = html_tag_re.search(txt)
+                        if html_match:
+                            html_attrs = html_match.group(1)
+                            lang_match = re.search(r'lang=["\']?([a-z]{2})["\']?', html_attrs, re.IGNORECASE)
+                            dir_match = re.search(r'dir=["\']?(ltr|rtl)["\']?', html_attrs, re.IGNORECASE)
+                            if lang_match:
+                                page_lang = lang_match.group(1)
+                            if dir_match:
+                                page_dir = dir_match.group(1)
+                        
+                        # First page sets document defaults
                         if i == 0:
                             m = head_re.search(txt)
                             head = m.group(1) if m else ''
+                            document_lang = page_lang or 'en'
+                            document_dir = page_dir or 'ltr'
+                        
+                        # Extract body content
                         m2 = body_re.search(txt)
-                        bodies.append(m2.group(1) if m2 else txt)
-                    combined = '<!DOCTYPE html>\n<html>\n<head>' + head + '</head>\n<body>\n' + '\n<hr/>\n'.join(bodies) + '\n</body>\n</html>'
+                        body_content = m2.group(1) if m2 else txt
+                        
+                        # Wrap each page in a div with its own lang/dir attributes
+                        # This preserves the direction of each individual page
+                        page_attrs = []
+                        if page_lang:
+                            page_attrs.append(f'lang="{page_lang}"')
+                        if page_dir:
+                            page_attrs.append(f'dir="{page_dir}"')
+                        
+                        attrs_str = ' ' + ' '.join(page_attrs) if page_attrs else ''
+                        page_div = f'<div class="page"{attrs_str}>\n{body_content}\n</div>'
+                        page_divs.append(page_div)
+                    
+                    # Create combined HTML with document-level defaults and individual page divs
+                    # Each page maintains its own direction via the div wrapper
+                    combined = f'<!DOCTYPE html>\n<html lang="{document_lang}" dir="{document_dir}">\n<head>' + head + f'''
+<style>
+/* Page container styling - each page is independent and creates a page break */
+.page {{
+    page-break-after: always;
+    break-after: page;
+    margin: 0 auto 2em auto;
+    padding: 2em;
+    max-width: 21cm;
+    min-height: 29.7cm;
+    background: white;
+    box-sizing: border-box;
+}}
+
+/* Remove page break after the last page */
+.page:last-child {{
+    page-break-after: avoid;
+    break-after: avoid;
+}}
+
+/* Print-specific styling to ensure proper page breaks */
+@media print {{
+    .page {{
+        margin: 0;
+        padding: 2cm;
+        max-width: 100%;
+        min-height: 100vh;
+        page-break-after: always;
+        break-after: page;
+    }}
+    .page:last-child {{
+        page-break-after: avoid;
+        break-after: avoid;
+    }}
+}}
+
+/* Screen view: add visual separation between pages */
+@media screen {{
+    .page {{
+        box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+        border: 1px solid #e0e0e0;
+    }}
+    .page:not(:last-child) {{
+        margin-bottom: 2em;
+    }}
+}}
+</style>
+</head>\n<body>\n''' + '\n'.join(page_divs) + '\n</body>\n</html>'
                     final_html = doc_out / (pdf_path.stem + '.html')
                     final_html.write_text(combined, encoding='utf-8')
                 else:

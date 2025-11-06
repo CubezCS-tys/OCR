@@ -37,9 +37,14 @@ def ensure_pandoc():
     return which('pandoc') is not None
 
 
-def copy_assets_and_prepare(input_html: Path, tmpdir: Path):
-    """Copy HTML and locally referenced images into tmpdir, inject RTL CSS/meta when Arabic is detected.
+def copy_assets_and_prepare(input_html: Path, tmpdir: Path, verbose=False):
+    """Copy HTML and locally referenced images into tmpdir, ensure proper lang/dir attributes.
     Return path to the modified HTML placed in tmpdir.
+    
+    Args:
+        input_html: Path to the input HTML file
+        tmpdir: Temporary directory to work in
+        verbose: If True, print debug information about language/direction detection
     """
     with open(input_html, 'r', encoding='utf-8') as f:
         html = f.read()
@@ -79,9 +84,37 @@ def copy_assets_and_prepare(input_html: Path, tmpdir: Path):
         else:
             print(f"[WARN] Referenced image not found or not a file: {src}")
 
-    # Detect Arabic characters to decide whether to force RTL
+    # Detect language from HTML attributes first, then fallback to character detection
+    lang_match = re.search(r'(?i)<html[^>]*\slang=["\']([a-zA-Z0-9_\-]+)["\']', html)
+    detected_lang = lang_match.group(1).lower() if lang_match else None
+    
+    # Detect direction from HTML attributes
+    dir_match = re.search(r'(?i)<html[^>]*\sdir=["\']([a-zA-Z]+)["\']', html)
+    detected_dir = dir_match.group(1).lower() if dir_match else None
+    
+    # Fallback: Detect Arabic characters to decide whether to force RTL
     arabic_re = re.compile(r"[\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF]")
     has_arabic = bool(arabic_re.search(html))
+    
+    # Determine final language and direction
+    # Priority: 1) Explicit HTML attributes, 2) Character detection
+    if detected_lang:
+        lang = detected_lang
+    elif has_arabic:
+        lang = 'ar'
+    else:
+        lang = 'en'
+    
+    if detected_dir:
+        direction = detected_dir
+    elif has_arabic:
+        direction = 'rtl'
+    else:
+        direction = 'ltr'
+    
+    if verbose:
+        print(f"  [CONVERT] HTML has lang={detected_lang!r}, dir={detected_dir!r}, Arabic chars={has_arabic}")
+        print(f"  [CONVERT] Final decision: lang='{lang}', dir='{direction}'")
 
     modified_html = html
 
@@ -93,43 +126,64 @@ def copy_assets_and_prepare(input_html: Path, tmpdir: Path):
         else:
             modified_html = '<meta charset="utf-8">\n' + modified_html
 
-    # Inject RTL attributes and CSS when Arabic detected
-    if has_arabic:
-        # Add lang and dir to <html> when missing
-        if re.search(r'(?i)<html[^>]*dir=', modified_html) is None:
-            if re.search(r'(?i)<html', modified_html):
-                # Keep any existing attributes then add lang/dir/style so tags remain well-formed
+    # Add lang and dir to <html> ONLY if they are missing
+    html_has_lang = bool(re.search(r'(?i)<html[^>]*\slang=', modified_html))
+    html_has_dir = bool(re.search(r'(?i)<html[^>]*\sdir=', modified_html))
+    
+    if not html_has_lang or not html_has_dir:
+        if re.search(r'(?i)<html', modified_html):
+            # Build the attributes to add
+            attrs_to_add = []
+            if not html_has_lang:
+                attrs_to_add.append(f'lang="{lang}"')
+            if not html_has_dir:
+                attrs_to_add.append(f'dir="{direction}"')
+            
+            if attrs_to_add:
+                attrs_str = ' ' + ' '.join(attrs_to_add)
                 modified_html = re.sub(
-                    r'(?i)<html([^>]*)>',
-                    r'<html\1 lang="ar" dir="rtl" style="direction:rtl;unicode-bidi:embed;">',
+                    r'(?i)(<html)([^>]*)(>)',
+                    rf'\1\2{attrs_str}\3',
                     modified_html,
-                    count=1,
+                    count=1
                 )
-            else:
-                modified_html = '<html lang="ar" dir="rtl" style="direction:rtl;unicode-bidi:embed;">\n' + modified_html + '\n</html>'
+        else:
+            # No <html> tag - add one
+            modified_html = f'<html lang="{lang}" dir="{direction}">\n' + modified_html + '\n</html>'
 
-        # Ensure body has dir attribute
-        if re.search(r'(?i)<body[^>]*dir=', modified_html) is None:
-            if re.search(r'(?i)<body', modified_html):
-                # Place any existing attributes first, then add dir/style
+    # Add dir to <body> ONLY if missing (for maximum compatibility)
+    body_has_dir = bool(re.search(r'(?i)<body[^>]*\sdir=', modified_html))
+    if not body_has_dir:
+        if re.search(r'(?i)<body', modified_html):
+            modified_html = re.sub(
+                r'(?i)(<body)([^>]*)(>)',
+                rf'\1\2 dir="{direction}"\3',
+                modified_html,
+                count=1
+            )
+        else:
+            # No body tag - add one after <html>
+            if re.search(r'(?i)<html[^>]*>', modified_html):
                 modified_html = re.sub(
-                    r'(?i)<body([^>]*)>',
-                    r'<body\1 dir="rtl" style="direction:rtl;unicode-bidi:embed;text-align:right;">',
+                    r'(?i)(<html[^>]*>)',
+                    rf'\1\n<body dir="{direction}">',
                     modified_html,
-                    count=1,
+                    count=1
                 )
-            else:
-                # wrap content in body
-                modified_html = re.sub(r'(?i)<html[^>]*>', r'\g<0>\n<body dir="rtl" style="direction:rtl;unicode-bidi:embed;text-align:right;">', modified_html, count=1)
                 if '</body>' not in modified_html.lower():
                     modified_html = modified_html + '\n</body>'
 
-        # Inject small RTL CSS into head
+    # Inject direction-aware CSS ONLY for RTL documents
+    # This ensures proper rendering in Pandoc conversions
+    if direction == 'rtl':
         rtl_css = '<style>body{direction:rtl;unicode-bidi:embed;text-align: right;} img{max-width:100%;height:auto;}</style>'
         if re.search(r'(?i)<head[^>]*>', modified_html):
-            modified_html = re.sub(r'(?i)(<head[^>]*>)', r"\1\n" + rtl_css, modified_html, count=1)
+            # Check if RTL CSS is already present
+            if 'direction:rtl' not in modified_html:
+                modified_html = re.sub(r'(?i)(<head[^>]*>)', r"\1\n" + rtl_css, modified_html, count=1)
         else:
-            modified_html = rtl_css + '\n' + modified_html
+            if 'direction:rtl' not in modified_html:
+                modified_html = rtl_css + '\n' + modified_html
 
     # Write modified HTML into tmpdir
     # Rewrite image src attributes in the modified_html to point to files copied into tmpdir
@@ -211,6 +265,7 @@ def main():
     parser.add_argument('--author', help='Author metadata')
     parser.add_argument('--cover', help='Path to cover image file (for EPUB)')
     parser.add_argument('--epub-math', choices=['mathml','images','mathjax'], default='mathml', help='EPUB math handling strategy (default: mathml)')
+    parser.add_argument('--verbose', action='store_true', help='Print debug information about language/direction detection')
 
     args = parser.parse_args()
 
@@ -234,7 +289,7 @@ def main():
     # Create temp workspace
     with tempfile.TemporaryDirectory(prefix='html_convert_') as td:
         tmpdir = Path(td)
-        work_html = copy_assets_and_prepare(input_html, tmpdir)
+        work_html = copy_assets_and_prepare(input_html, tmpdir, verbose=args.verbose)
 
         # Read prepared HTML and detect language. Prefer an explicit lang attribute.
         try:
