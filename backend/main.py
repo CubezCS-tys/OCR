@@ -183,223 +183,428 @@ def extract_page_as_pdf(pdf_reader, page_num, output_path, reader_type='pypdf', 
             raise Exception(f"pypdf page extraction failed: {e}")
 
 
-def create_converter_prompt(filename):
+# def create_converter_prompt(filename):
+#     """
+#     Generates the detailed system prompt for the Gemini model.
+#     """
+#     return f"""
+#     You are an expert document structure analyst and HTML converter. Your task is to convert the provided PDF page titled '{filename}' into well-structured, readable HTML format.
+
+#     **IMPORTANT GUIDELINES:**
+
+#     1.  **Content Accuracy:**
+#         * Extract all text, numbers, and data EXACTLY as shown in the PDF
+#         * Do NOT translate numbers between Arabic/English numerals
+#         * Do NOT modify dates, measurements, or numeric values
+#         * Preserve the original language and script of all content
+
+#     2.  **Structure & Formatting:**
+#         * Analyze the document and use appropriate semantic HTML tags (H1, H2, H3, P, UL, OL, TABLE)
+#         * You may clean up spacing and line breaks for better HTML readability
+#         * Preserve the logical hierarchy and flow of the document
+#         * For tables: maintain the original structure, borders, and cell alignment
+
+#     3.  **Consistent Styling (REQUIRED):**
+#         * Use the SAME CSS stylesheet for every page you process
+#         * Do NOT change colors, font sizes, or spacing between different pages
+#         * All pages must have a uniform, professional appearance
+#         * Use the provided CSS template below without modification
+#         * DO NOT add <link href="https://fonts.googleapis.com/css2?family=Amiri:wght@400;700&display=swap" rel="stylesheet"> to the HTML. Assume the font is already available and just use whats already in the CSS layout.
+
+#     4.  **Language and Direction (CRITICAL - MUST FOLLOW EXACTLY):**
+#         * **STEP 1 - DETECT PRIMARY LANGUAGE (Smart Detection):**
+#           - Count only VISIBLE TEXT content when deciding the primary language
+#           - **IGNORE these when counting:** HTML tags, CSS, JavaScript, numbers, punctuation, URLs, email addresses, DOIs, and citation/reference lists
+#           - **COUNT only actual prose:** headings, paragraphs, list items, table cells
+#           - If visible Arabic letters ≥ visible English letters → **Arabic-dominant**
+#           - If visible English letters > visible Arabic letters → **English-dominant**
+#           - Examples of what to ignore: "https://example.com", "email@domain.com", "Vol. 2022", "ISBN 978-..."
+        
+#         * **STEP 2 - SET DOCUMENT DIRECTION:** Based on the detected PRIMARY language, set BOTH attributes on the `<html>` tag:
+#           - **FOR ARABIC-DOMINANT (>50% Arabic):** `<html lang="ar" dir="rtl">` — Reading flows RIGHT to LEFT
+#           - **FOR ENGLISH-DOMINANT (>50% English):** `<html lang="en" dir="ltr">` — Reading flows LEFT to RIGHT
+        
+#         * **STEP 3 - ENFORCE ON BODY:** ALSO add the `dir` attribute to the `<body>` tag for maximum browser compatibility:
+#           - **FOR ARABIC-DOMINANT:** `<body dir="rtl">` — Content aligns to the right, lists indent from right
+#           - **FOR ENGLISH-DOMINANT:** `<body dir="ltr">` — Content aligns to the left, lists indent from left
+        
+#         * **STEP 4 - HANDLE MIXED CONTENT (IMPORTANT):**
+#           - **PRIMARY STRATEGY - Use semantic containers for language switches:**
+#             * When you encounter a section in a different language than the document's primary language, wrap it in a `<div>` with explicit `dir` attribute
+#             * This creates clean language boundaries and proper rendering
+          
+#           - **Examples of when to use `<div>` wrappers:**
+#             * **Arabic document with English abstract:**
+#               ```html
+#               <body dir="rtl">
+#                 <h1>غلق الرهن في القانون الإنجليزي</h1>
+                
+#                 <!-- English section gets its own container -->
+#                 <div dir="ltr">
+#                   <h2>Abstract</h2>
+#                   <p>The Foreclosure is considered as the most drastic remedy...</p>
+#                   <p>This remedy allows the mortgagee to acquire ownership...</p>
+#                   <p><strong>Keywords:</strong> Foreclosure, Redemption, Equitable Right.</p>
+#                 </div>
+                
+#                 <!-- Back to Arabic (inherits RTL from body) -->
+#                 <h2>ملخص البحث</h2>
+#                 <p>يعد غلق الرهن في القانون الانجليزي...</p>
+#               </body>
+#               ```
+            
+#             * **English document with Arabic quotations:**
+#               ```html
+#               <body dir="ltr">
+#                 <p>The author states:</p>
+                
+#                 <!-- Arabic quote gets its own container -->
+#                 <div dir="rtl">
+#                   <blockquote>
+#                     <p>النص العربي الكامل للاقتباس...</p>
+#                   </blockquote>
+#                 </div>
+                
+#                 <!-- Back to English -->
+#                 <p>This demonstrates the principle...</p>
+#               </body>
+#               ```
+          
+#           - **When NOT to use containers:**
+#             * Single words or names embedded in text (e.g., "Dr. يونس صلاح الدين" in English sentence)
+#             * Short inline phrases (1-2 words) - Unicode BiDi algorithm handles these
+#             * Number/date formatting differences
+          
+#           - **Alternative: Paragraph-level `dir` (use sparingly):**
+#             * Only if document alternates between languages every 1-2 paragraphs AND sections are too short for `<div>` wrappers
+#             * Example: `<p dir="ltr">This single English paragraph...</p>`
+#             * Prefer `<div>` wrappers for better semantic structure
+          
+#           - **Decision tree:**
+#             ```
+#             Same language as document?
+#               → No dir attribute needed (inherits from <html>/<body>)
+            
+#             Different language, 3+ consecutive paragraphs?
+#               → Use <div dir="...">...</div> wrapper
+            
+#             Different language, 1-2 paragraphs only?
+#               → Add dir="..." to individual <p> tags
+            
+#             Different language, single word/phrase?
+#               → No dir needed (Unicode BiDi handles it)
+#             ```
+        
+#         * **STEP 5 - NO HARD ALIGNMENT (CRITICAL):**
+#           - **NEVER use `text-align:left` or `text-align:right` in inline styles**
+#           - Use `text-align:start` or `text-align:end` if needed (they respect `dir`)
+#           - Better yet: let the `dir` attribute control alignment automatically
+#           - The CSS template already handles list padding based on `dir`—don't override it
+#           - Hard left/right alignment fights the natural document direction
+        
+#         * **STEP 6 - CONSISTENCY CHECK:**
+#           - Do NOT add `dir` attributes to every single paragraph unless necessary
+#           - Only add `dir` when switching languages within a mixed-language document
+#           - The document-level direction should handle the majority language
+        
+#         * **VISUAL GUIDE:**
+#           - RTL (Arabic): Content flows ← this way, text aligns right, bullets appear on right side of lists
+#           - LTR (English): Content flows this way →, text aligns left, bullets appear on left side of lists
+
+#     5.  **Math/Equations (CRITICAL - Follow Exactly):**
+#         * **Math Direction Rule:** Mathematical equations themselves are ALWAYS left-to-right (LTR) by convention, but they must respect the page's overall direction
+#         * **For Arabic (RTL) pages with math:**
+#           - The PAGE remains `dir="rtl"` (Arabic text flows right-to-left)
+#           - Math equations stay in their natural LTR form: `$x = y + z$`
+#           - The equation will render correctly within the RTL context
+#           - DO NOT add `dir="ltr"` to every equation - let the math rendering handle it
+#           - Arabic text before/after equations flows RTL naturally
+#         * **Inline Math:** Wrap ALL inline mathematical expressions in single dollar signs: `$expression$`
+#           - Example: "The value of $x = 5$" or "equation $a^2 + b^2$"
+#           - In Arabic: "القيمة $x = 5$ في المعادلة" (RTL text, LTR math)
+#           - Do NOT use parentheses or brackets for math
+#           - ALWAYS use `$...$` for any mathematical symbol, variable, or expression within text
+#         * **Display Equations (Block):** Wrap in double dollar signs `$$...$$` and place in a `<div class="equation">` 
+#           - Example: `<div class="equation">$$x^2 + y^2 = z^2$$</div>`
+#           - The equation div will center in RTL or LTR context automatically
+#           - DO NOT add `dir="ltr"` to the equation div
+#         * **Important:** Math-heavy pages should still use the document's primary language direction
+#           - If an Arabic academic paper has many equations, keep `<html lang="ar" dir="rtl">`
+#           - If an English math textbook, keep `<html lang="en" dir="ltr">`
+#           - The presence of math does NOT change the document direction
+#         * Preserve ALL mathematical notation EXACTLY as shown in the PDF
+#         * Include MathJax configuration in `<head>` section (see template below)
+
+#     6.  **Images and Figures:**
+#                 * When you encounter an image, diagram, chart, or figure, DO NOT embed binary image data.
+#                 * Instead insert a stable placeholder token exactly in this format:
+#                     `[IMAGE_PLACEHOLDER:IMAGE_ID:Short description of the image]`
+#                     where `IMAGE_ID` is a short identifier (e.g., `img_1`, `fig_2`) the post-processor will use to match extracted files.
+#                 * Include relevant context like "Figure 1", "Chart showing...", "Diagram of..." etc.
+#                 * Do NOT attempt to embed or extract the actual image data
+
+#     7.  **Standard CSS Template (Use Exactly As-Is):**
+#     ```css
+#     <style>
+#         body {{
+#             font-family: 'Amiri', 'Traditional Arabic', serif;
+#             max-width: 800px;
+#             margin: 40px auto;
+#             padding: 20px;
+#             line-height: 1.8;
+#             background: #ffffff;
+#             color: #000000;
+#         }}
+#         h1, h2, h3 {{ 
+#             color: #2c3e50;
+#             margin-top: 1.5em;
+#             margin-bottom: 0.8em;
+#         }}
+#         h1 {{ font-size: 1.8em; border-bottom: 2px solid #3498db; padding-bottom: 0.3em; }}
+#         h2 {{ font-size: 1.5em; }}
+#         h3 {{ font-size: 1.2em; }}
+#         p {{ margin: 1em 0; }}
+#         table {{ 
+#             border-collapse: collapse; 
+#             width: 100%; 
+#             margin: 1.5em 0;
+#         }}
+#         th, td {{ 
+#             border: 1px solid #000; 
+#             padding: 8px 12px; 
+#             text-align: center;
+#         }}
+#         th {{ background-color: #d3d3d3; font-weight: bold; }}
+#         .equation {{ 
+#             text-align: center; 
+#             margin: 1.5em 0; 
+#             padding: 1em;
+#             background: #f8f9fa;
+#         }}
+#         .image-placeholder {{
+#             border: 2px dashed #999;
+#             padding: 2em;
+#             margin: 1.5em 0;
+#             text-align: center;
+#             background: #f0f0f0;
+#             color: #666;
+#             font-style: italic;
+#         }}
+#         ul, ol {{ margin: 1em 0; }}
+#         li {{ margin: 0.5em 0; }}
+#         /* For RTL languages: add padding-right to lists */
+#         html[dir="rtl"] ul, html[dir="rtl"] ol {{ padding-right: 2em; padding-left: 0; }}
+#         /* For LTR languages: add padding-left to lists */
+#         html[dir="ltr"] ul, html[dir="ltr"] ol {{ padding-left: 2em; padding-right: 0; }}
+#     </style>
+#     ```
+
+#     8.  **MathJax Configuration:**
+#     ```html
+#     <script>
+#         MathJax = {{
+#             tex: {{ inlineMath: [['$', '$']], displayMath: [['$$', '$$']] }},
+#             svg: {{ fontCache: 'global' }}
+#         }};
+#     </script>
+#     <script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+#     ```
+
+#     9.  **Output Requirements:**
+#         * Produce a complete, self-contained HTML file starting with `<!DOCTYPE html>`
+#         * **CRITICAL**: The opening `<html>` tag MUST include both `lang` and `dir` attributes:
+#           - For Arabic: `<html lang="ar" dir="rtl">`
+#           - For English: `<html lang="en" dir="ltr">`
+#         * **ALSO** add the `dir` attribute to the `<body>` tag for maximum compatibility:
+#           - For Arabic: `<body dir="rtl">`
+#           - For English: `<body dir="ltr">`
+#         * Include the exact CSS and MathJax configuration above
+#         * Extract ALL content from the page - ensure completeness
+#         * Output ONLY the HTML - no explanations or markdown code blocks
+#         * Before outputting, double-check that all guidelines have been followed, and that there are no errors or omissions.
+
+#     10. **Expected HTML Structure Example (Arabic with English sections):**
+#     ```html
+#     <!DOCTYPE html>
+#     <html lang="ar" dir="rtl">
+#     <head>
+#         <meta charset="utf-8">
+#         <style>
+#             /* CSS from template above */
+#         </style>
+#         <script>
+#             MathJax = {{
+#                 tex: {{ inlineMath: [['$', '$']], displayMath: [['$$', '$$']] }},
+#                 svg: {{ fontCache: 'global' }}
+#             }};
+#         </script>
+#         <script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+#     </head>
+#     <body dir="rtl">
+#         <!-- Primary language: Arabic (flows RTL) -->
+#         <h1>غلق الرهن في القانون الإنجليزي</h1>
+#         <p>دراسة تحليلية مقارنة بالفقه الإسلامي والقانون المقارن</p>
+        
+#         <!-- English section wrapped in <div dir="ltr"> -->
+#         <div dir="ltr">
+#             <h2>Abstract</h2>
+#             <p>The Foreclosure is considered as the most drastic remedy...</p>
+#             <p>This allows the mortgagee to acquire ownership...</p>
+#             <p><strong>Keywords:</strong> Foreclosure, Redemption, Equitable Right.</p>
+#         </div>
+        
+#         <!-- Back to Arabic (inherits RTL from body) -->
+#         <h2>ملخص البحث</h2>
+#         <p>يعد غلق الرهن في القانون الانجليزي...</p>
+#         <ul>
+#             <li>النقطة الأولى</li>
+#             <li>النقطة الثانية</li>
+#         </ul>
+        
+#         <!-- Mixed content with math -->
+#         <p>المعادلة $x = 5$ تظهر في النص العربي.</p>
+#         <div class="equation">$$x^2 + y^2 = z^2$$</div>
+#     </body>
+#     </html>
+#     ```
+    
+#     **Expected HTML Structure Example (English):**
+#     ```html
+#     <!DOCTYPE html>
+#     <html lang="en" dir="ltr">
+#     <head>
+#         <meta charset="utf-8">
+#         <style>
+#             /* CSS from template above */
+#         </style>
+#         <script>
+#             MathJax = {{
+#                 tex: {{ inlineMath: [['$', '$']], displayMath: [['$$', '$$']] }},
+#                 svg: {{ fontCache: 'global' }}
+#             }};
+#         </script>
+#         <script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+#     </head>
+#     <body dir="ltr">
+#         <h1>Page Title</h1>
+#         <p>English text flows from left to right.</p>
+#         <ul>
+#             <li>First point</li>
+#             <li>Second point</li>
+#         </ul>
+#         <p>Text with inline math like $x = 5$ goes here.</p>
+#         <div class="equation">$$x^2 + y^2 = z^2$$</div>
+#     </body>
+#     </html>
+#     ```
+
+#     **Balance:** Extract accurately while applying good document structure. Maintain perfect consistency in styling across all pages.
+#     """
+
+def create_converter_prompt(filename, extract_images=True):
     """
-    Generates the detailed system prompt for the Gemini model.
+    Generates a concise system prompt for the Gemini model.
+    
+    Args:
+        filename: The PDF filename being processed
+        extract_images: If True, use IMAGE_PLACEHOLDER markers. If False, describe images in text.
     """
+    
+    # Conditional image instruction
+    if extract_images:
+        image_instruction = '6. **Images:** Use `[IMAGE_PLACEHOLDER:ID:Description]`. Do not embed binary data.'
+    else:
+        image_instruction = '6. **Images:** When you encounter an image, figure, diagram, or chart, describe it briefly in the text instead of using placeholders. Example: "[Figure 1: A kinematic diagram showing three stages of weapon movement]" or simply describe the visual content inline with the surrounding text. Do NOT use IMAGE_PLACEHOLDER markers.'
+    
     return f"""
-    You are an expert document structure analyst and HTML converter. Your task is to convert the provided PDF page titled '{filename}' into well-structured, readable HTML format.
+    You are an expert in document structure and HTML conversion. Convert the PDF page titled '{filename}' into clean, well-structured HTML.
 
-    **IMPORTANT GUIDELINES:**
+    0. **Fidelity / Like-for-Like Recreation (CRITICAL):**
+    - Treat the PDF as the single source of truth.
+    - Do **NOT** summarise, paraphrase, or “improve” the wording.
+    - Do **NOT** correct typos, grammar, punctuation, or spacing unless required for valid HTML syntax.
+    - Preserve:
+    * Exact wording, casing, punctuation, and line order
+    * Explicit line breaks where they clearly separate headings, paragraphs, or list items
+    * All visible symbols, superscripts/subscripts, footnotes markers, references (e.g. [1], (1), * etc.)
+    * The logical order of content as it appears top-to-bottom, left-to-right (or right-to-left for Arabic)
+    - If any text is illegible or cut off, **do not guess**. Use a placeholder like `[UNCLEAR: original fragment]`.
+    - Do not drop content: every visible text element on the page must appear in the HTML somewhere.
 
-    1.  **Content Accuracy:**
-        * Extract all text, numbers, and data EXACTLY as shown in the PDF
-        * Do NOT translate numbers between Arabic/English numerals
-        * Do NOT modify dates, measurements, or numeric values
-        * Preserve the original language and script of all content
+    **Core Rules:**
+    1. **Accuracy:** Extract all text, numbers, and equations exactly as in the PDF. Preserve original language, numerals, and formatting.
+    2. **HTML Structure:** Use semantic tags (H1–H3, P, UL/OL, TABLE). Keep logical hierarchy and readable spacing. Preserve table layouts and alignment.
+    3. **Styling:** Use the *same CSS* for all pages (template below). No colour, font, or spacing changes. Do not include external font links.
+    4. **Language & Direction:**
+       - Detect main language by counting visible letters only (ignore URLs, numbers, citations).
+       - Arabic ≥ English → `<html lang="ar" dir="rtl">`
+       - English > Arabic → `<html lang="en" dir="ltr">`
+       - Mirror the same `dir` in `<body>`.
+       - Wrap secondary-language sections in `<div dir="...">`, not individual words.
+       - Use paragraph-level `dir` only for 1–2 isolated paragraphs.
+       - Never use fixed alignment (`left`/`right`); rely on `dir` and CSS.
 
-    2.  **Structure & Formatting:**
-        * Analyze the document and use appropriate semantic HTML tags (H1, H2, H3, P, UL, OL, TABLE)
-        * You may clean up spacing and line breaks for better HTML readability
-        * Preserve the logical hierarchy and flow of the document
-        * For tables: maintain the original structure, borders, and cell alignment
+    5. **Math Rules:**
+       - Inline math: `$expression$`; display math: `<div class="equation">$$...$$</div>`.
+       - Equations always LTR; do not add `dir="ltr"` unless switching languages.
+       - Include MathJax config as shown below.
 
-    3.  **Consistent Styling (REQUIRED):**
-        * Use the SAME CSS stylesheet for every page you process
-        * Do NOT change colors, font sizes, or spacing between different pages
-        * All pages must have a uniform, professional appearance
-        * Use the provided CSS template below without modification
-        * DO NOT add <link href="https://fonts.googleapis.com/css2?family=Amiri:wght@400;700&display=swap" rel="stylesheet"> to the HTML. Assume the font is already available and just use whats already in the CSS layout.
+    {image_instruction}
 
-    4.  **Language and Direction (CRITICAL - MUST FOLLOW EXACTLY):**
-        * **STEP 1 - DETECT PRIMARY LANGUAGE (Smart Detection):**
-          - Count only VISIBLE TEXT content when deciding the primary language
-          - **IGNORE these when counting:** HTML tags, CSS, JavaScript, numbers, punctuation, URLs, email addresses, DOIs, and citation/reference lists
-          - **COUNT only actual prose:** headings, paragraphs, list items, table cells
-          - If visible Arabic letters ≥ visible English letters → **Arabic-dominant**
-          - If visible English letters > visible Arabic letters → **English-dominant**
-          - Examples of what to ignore: "https://example.com", "email@domain.com", "Vol. 2022", "ISBN 978-..."
-        
-        * **STEP 2 - SET DOCUMENT DIRECTION:** Based on the detected PRIMARY language, set BOTH attributes on the `<html>` tag:
-          - **FOR ARABIC-DOMINANT (>50% Arabic):** `<html lang="ar" dir="rtl">` — Reading flows RIGHT to LEFT
-          - **FOR ENGLISH-DOMINANT (>50% English):** `<html lang="en" dir="ltr">` — Reading flows LEFT to RIGHT
-        
-        * **STEP 3 - ENFORCE ON BODY:** ALSO add the `dir` attribute to the `<body>` tag for maximum browser compatibility:
-          - **FOR ARABIC-DOMINANT:** `<body dir="rtl">` — Content aligns to the right, lists indent from right
-          - **FOR ENGLISH-DOMINANT:** `<body dir="ltr">` — Content aligns to the left, lists indent from left
-        
-        * **STEP 4 - HANDLE MIXED CONTENT (IMPORTANT):**
-          - **PRIMARY STRATEGY - Use semantic containers for language switches:**
-            * When you encounter a section in a different language than the document's primary language, wrap it in a `<div>` with explicit `dir` attribute
-            * This creates clean language boundaries and proper rendering
-          
-          - **Examples of when to use `<div>` wrappers:**
-            * **Arabic document with English abstract:**
-              ```html
-              <body dir="rtl">
-                <h1>غلق الرهن في القانون الإنجليزي</h1>
-                
-                <!-- English section gets its own container -->
-                <div dir="ltr">
-                  <h2>Abstract</h2>
-                  <p>The Foreclosure is considered as the most drastic remedy...</p>
-                  <p>This remedy allows the mortgagee to acquire ownership...</p>
-                  <p><strong>Keywords:</strong> Foreclosure, Redemption, Equitable Right.</p>
-                </div>
-                
-                <!-- Back to Arabic (inherits RTL from body) -->
-                <h2>ملخص البحث</h2>
-                <p>يعد غلق الرهن في القانون الانجليزي...</p>
-              </body>
-              ```
-            
-            * **English document with Arabic quotations:**
-              ```html
-              <body dir="ltr">
-                <p>The author states:</p>
-                
-                <!-- Arabic quote gets its own container -->
-                <div dir="rtl">
-                  <blockquote>
-                    <p>النص العربي الكامل للاقتباس...</p>
-                  </blockquote>
-                </div>
-                
-                <!-- Back to English -->
-                <p>This demonstrates the principle...</p>
-              </body>
-              ```
-          
-          - **When NOT to use containers:**
-            * Single words or names embedded in text (e.g., "Dr. يونس صلاح الدين" in English sentence)
-            * Short inline phrases (1-2 words) - Unicode BiDi algorithm handles these
-            * Number/date formatting differences
-          
-          - **Alternative: Paragraph-level `dir` (use sparingly):**
-            * Only if document alternates between languages every 1-2 paragraphs AND sections are too short for `<div>` wrappers
-            * Example: `<p dir="ltr">This single English paragraph...</p>`
-            * Prefer `<div>` wrappers for better semantic structure
-          
-          - **Decision tree:**
-            ```
-            Same language as document?
-              → No dir attribute needed (inherits from <html>/<body>)
-            
-            Different language, 3+ consecutive paragraphs?
-              → Use <div dir="...">...</div> wrapper
-            
-            Different language, 1-2 paragraphs only?
-              → Add dir="..." to individual <p> tags
-            
-            Different language, single word/phrase?
-              → No dir needed (Unicode BiDi handles it)
-            ```
-        
-        * **STEP 5 - NO HARD ALIGNMENT (CRITICAL):**
-          - **NEVER use `text-align:left` or `text-align:right` in inline styles**
-          - Use `text-align:start` or `text-align:end` if needed (they respect `dir`)
-          - Better yet: let the `dir` attribute control alignment automatically
-          - The CSS template already handles list padding based on `dir`—don't override it
-          - Hard left/right alignment fights the natural document direction
-        
-        * **STEP 6 - CONSISTENCY CHECK:**
-          - Do NOT add `dir` attributes to every single paragraph unless necessary
-          - Only add `dir` when switching languages within a mixed-language document
-          - The document-level direction should handle the majority language
-        
-        * **VISUAL GUIDE:**
-          - RTL (Arabic): Content flows ← this way, text aligns right, bullets appear on right side of lists
-          - LTR (English): Content flows this way →, text aligns left, bullets appear on left side of lists
-
-    5.  **Math/Equations (CRITICAL - Follow Exactly):**
-        * **Math Direction Rule:** Mathematical equations themselves are ALWAYS left-to-right (LTR) by convention, but they must respect the page's overall direction
-        * **For Arabic (RTL) pages with math:**
-          - The PAGE remains `dir="rtl"` (Arabic text flows right-to-left)
-          - Math equations stay in their natural LTR form: `$x = y + z$`
-          - The equation will render correctly within the RTL context
-          - DO NOT add `dir="ltr"` to every equation - let the math rendering handle it
-          - Arabic text before/after equations flows RTL naturally
-        * **Inline Math:** Wrap ALL inline mathematical expressions in single dollar signs: `$expression$`
-          - Example: "The value of $x = 5$" or "equation $a^2 + b^2$"
-          - In Arabic: "القيمة $x = 5$ في المعادلة" (RTL text, LTR math)
-          - Do NOT use parentheses or brackets for math
-          - ALWAYS use `$...$` for any mathematical symbol, variable, or expression within text
-        * **Display Equations (Block):** Wrap in double dollar signs `$$...$$` and place in a `<div class="equation">` 
-          - Example: `<div class="equation">$$x^2 + y^2 = z^2$$</div>`
-          - The equation div will center in RTL or LTR context automatically
-          - DO NOT add `dir="ltr"` to the equation div
-        * **Important:** Math-heavy pages should still use the document's primary language direction
-          - If an Arabic academic paper has many equations, keep `<html lang="ar" dir="rtl">`
-          - If an English math textbook, keep `<html lang="en" dir="ltr">`
-          - The presence of math does NOT change the document direction
-        * Preserve ALL mathematical notation EXACTLY as shown in the PDF
-        * Include MathJax configuration in `<head>` section (see template below)
-
-    6.  **Images and Figures:**
-                * When you encounter an image, diagram, chart, or figure, DO NOT embed binary image data.
-                * Instead insert a stable placeholder token exactly in this format:
-                    `[IMAGE_PLACEHOLDER:IMAGE_ID:Short description of the image]`
-                    where `IMAGE_ID` is a short identifier (e.g., `img_1`, `fig_2`) the post-processor will use to match extracted files.
-                * Include relevant context like "Figure 1", "Chart showing...", "Diagram of..." etc.
-                * Do NOT attempt to embed or extract the actual image data
-
-    7.  **Standard CSS Template (Use Exactly As-Is):**
+    7. **CSS Template (use exactly):**
     ```css
     <style>
         body {{
-            font-family: 'Amiri', 'Traditional Arabic', serif;
-            max-width: 800px;
-            margin: 40px auto;
-            padding: 20px;
-            line-height: 1.8;
-            background: #ffffff;
-            color: #000000;
+            font-family: 'Amiri', serif;
+            max-width: 800px; margin: 40px auto; padding: 20px;
+            background: #fff; color: #000; line-height: 1.8;
         }}
-        h1, h2, h3 {{ 
-            color: #2c3e50;
-            margin-top: 1.5em;
-            margin-bottom: 0.8em;
-        }}
-        h1 {{ font-size: 1.8em; border-bottom: 2px solid #3498db; padding-bottom: 0.3em; }}
-        h2 {{ font-size: 1.5em; }}
-        h3 {{ font-size: 1.2em; }}
-        p {{ margin: 1em 0; }}
+        h1,h2,h3 {{ color: #2c3e50; margin-top:1.5em; margin-bottom:0.8em; }}
+        h1 {{ font-size:1.8em; border-bottom:2px solid #3498db; }}
+        h2 {{ font-size:1.5em; }} h3 {{ font-size:1.2em; }}
+        
+        /* Responsive tables that fit on page */
         table {{ 
-            border-collapse: collapse; 
-            width: 100%; 
-            margin: 1.5em 0;
+            border-collapse:collapse; 
+            width:100%; 
+            margin:1.5em 0;
+            display: block;
+            overflow-x: auto;
+            -webkit-overflow-scrolling: touch;
         }}
-        th, td {{ 
-            border: 1px solid #000; 
-            padding: 8px 12px; 
-            text-align: center;
+        th,td {{ 
+            border:1px solid #000; 
+            padding:8px 12px; 
+            text-align:center;
+            min-width: 80px;
+            word-wrap: break-word;
         }}
-        th {{ background-color: #d3d3d3; font-weight: bold; }}
-        .equation {{ 
-            text-align: center; 
-            margin: 1.5em 0; 
-            padding: 1em;
-            background: #f8f9fa;
+        th {{ background:#d3d3d3; }}
+        
+        /* Make tables fit in print/DOCX */
+        @media print {{
+            table {{ 
+                display: table;
+                width: 100%;
+                table-layout: fixed;
+            }}
+            th, td {{
+                font-size: 0.9em;
+                padding: 6px 8px;
+            }}
         }}
+        
+        .equation {{ text-align:center; margin:1.5em 0; background:#f8f9fa; padding:1em; }}
         .image-placeholder {{
-            border: 2px dashed #999;
-            padding: 2em;
-            margin: 1.5em 0;
-            text-align: center;
-            background: #f0f0f0;
-            color: #666;
-            font-style: italic;
+            border:2px dashed #999; padding:2em; text-align:center;
+            background:#f0f0f0; color:#666; font-style:italic; margin:1.5em 0;
         }}
-        ul, ol {{ margin: 1em 0; }}
-        li {{ margin: 0.5em 0; }}
-        /* For RTL languages: add padding-right to lists */
-        html[dir="rtl"] ul, html[dir="rtl"] ol {{ padding-right: 2em; padding-left: 0; }}
-        /* For LTR languages: add padding-left to lists */
-        html[dir="ltr"] ul, html[dir="ltr"] ol {{ padding-left: 2em; padding-right: 0; }}
+        html[dir="rtl"] ul,ol {{ padding-right:2em; }}
+        html[dir="ltr"] ul,ol {{ padding-left:2em; }}
     </style>
     ```
 
-    8.  **MathJax Configuration:**
+    8. **MathJax Config:**
     ```html
     <script>
         MathJax = {{
@@ -410,96 +615,33 @@ def create_converter_prompt(filename):
     <script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
     ```
 
-    9.  **Output Requirements:**
-        * Produce a complete, self-contained HTML file starting with `<!DOCTYPE html>`
-        * **CRITICAL**: The opening `<html>` tag MUST include both `lang` and `dir` attributes:
-          - For Arabic: `<html lang="ar" dir="rtl">`
-          - For English: `<html lang="en" dir="ltr">`
-        * **ALSO** add the `dir` attribute to the `<body>` tag for maximum compatibility:
-          - For Arabic: `<body dir="rtl">`
-          - For English: `<body dir="ltr">`
-        * Include the exact CSS and MathJax configuration above
-        * Extract ALL content from the page - ensure completeness
-        * Output ONLY the HTML - no explanations or markdown code blocks
-        * Before outputting, double-check that all guidelines have been followed, and that there are no errors or omissions.
+    9. **Output Requirements:**
+       - Produce a complete HTML document (`<!DOCTYPE html>`).
+       - Include correct `<html lang>` and `<body dir>` attributes.
+       - Use the exact CSS and MathJax config above.
+       - Output *only* the final HTML, no explanations or markdown.
 
-    10. **Expected HTML Structure Example (Arabic with English sections):**
+    **Example (Arabic-dominant):**
     ```html
     <!DOCTYPE html>
     <html lang="ar" dir="rtl">
-    <head>
-        <meta charset="utf-8">
-        <style>
-            /* CSS from template above */
-        </style>
-        <script>
-            MathJax = {{
-                tex: {{ inlineMath: [['$', '$']], displayMath: [['$$', '$$']] }},
-                svg: {{ fontCache: 'global' }}
-            }};
-        </script>
-        <script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
-    </head>
+    <head><meta charset="utf-8">[CSS + MathJax]</head>
     <body dir="rtl">
-        <!-- Primary language: Arabic (flows RTL) -->
         <h1>غلق الرهن في القانون الإنجليزي</h1>
-        <p>دراسة تحليلية مقارنة بالفقه الإسلامي والقانون المقارن</p>
-        
-        <!-- English section wrapped in <div dir="ltr"> -->
         <div dir="ltr">
-            <h2>Abstract</h2>
-            <p>The Foreclosure is considered as the most drastic remedy...</p>
-            <p>This allows the mortgagee to acquire ownership...</p>
-            <p><strong>Keywords:</strong> Foreclosure, Redemption, Equitable Right.</p>
+            <h2>Abstract</h2><p>The foreclosure is considered...</p>
         </div>
-        
-        <!-- Back to Arabic (inherits RTL from body) -->
-        <h2>ملخص البحث</h2>
-        <p>يعد غلق الرهن في القانون الانجليزي...</p>
-        <ul>
-            <li>النقطة الأولى</li>
-            <li>النقطة الثانية</li>
-        </ul>
-        
-        <!-- Mixed content with math -->
-        <p>المعادلة $x = 5$ تظهر في النص العربي.</p>
+        <h2>ملخص البحث</h2><p>يعد غلق الرهن...</p>
+        <p>المعادلة $x = 5$ تظهر في النص.</p>
         <div class="equation">$$x^2 + y^2 = z^2$$</div>
-    </body>
-    </html>
+    </body></html>
     ```
-    
-    **Expected HTML Structure Example (English):**
-    ```html
-    <!DOCTYPE html>
-    <html lang="en" dir="ltr">
-    <head>
-        <meta charset="utf-8">
-        <style>
-            /* CSS from template above */
-        </style>
-        <script>
-            MathJax = {{
-                tex: {{ inlineMath: [['$', '$']], displayMath: [['$$', '$$']] }},
-                svg: {{ fontCache: 'global' }}
-            }};
-        </script>
-        <script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
-    </head>
-    <body dir="ltr">
-        <h1>Page Title</h1>
-        <p>English text flows from left to right.</p>
-        <ul>
-            <li>First point</li>
-            <li>Second point</li>
-        </ul>
-        <p>Text with inline math like $x = 5$ goes here.</p>
-        <div class="equation">$$x^2 + y^2 = z^2$$</div>
-    </body>
-    </html>
-    ```
-
-    **Balance:** Extract accurately while applying good document structure. Maintain perfect consistency in styling across all pages.
     """
+
+
+
+
+
 
 def ensure_html_lang_dir(html_content, verbose=False):
     """
@@ -821,7 +963,7 @@ def embed_images_inline(output_filepath: Path, manifest_path: Path, images_outpu
         print(f"[WARN] Could not append extracted images to HTML: {e}")
 
 
-def process_single_page(client, pdf_file, page_num, num_pages, pdf_reader, reader_type, output_path, force, images_output_root, print_lock, rate_limiter=None, verbose=False, seed=None):
+def process_single_page(client, pdf_file, page_num, num_pages, pdf_reader, reader_type, output_path, force, images_output_root, print_lock, rate_limiter=None, verbose=False, seed=None, extract_images=True):
     """
     Process a single PDF page: create temp PDF, upload, generate HTML, save, and embed images.
     Returns (page_num, success, output_filepath) for tracking.
@@ -831,6 +973,7 @@ def process_single_page(client, pdf_file, page_num, num_pages, pdf_reader, reade
         reader_type: 'pypdf' or 'pymupdf' - indicates which reader was used
         rate_limiter: Optional RateLimiter instance to throttle API calls
         seed: Optional integer seed for deterministic LLM outputs
+        extract_images: Whether to use IMAGE_PLACEHOLDER markers in the prompt
     """
     with print_lock:
         print(f"  📄 Starting page {page_num + 1}/{num_pages}...")
@@ -903,12 +1046,12 @@ def process_single_page(client, pdf_file, page_num, num_pages, pdf_reader, reade
         return (page_num, False, None)
     
     # Generate HTML for this page
-    system_prompt = create_converter_prompt(f"{pdf_file.name} - Page {page_num + 1}")
+    system_prompt = create_converter_prompt(f"{pdf_file.name} - Page {page_num + 1}", extract_images=extract_images)
     
     try:
         requested_model = 'gemini-2.5-flash'
         # Build generation config with optional seed for deterministic outputs
-        config = {}
+        config = {'temperature': 0.0}
         if seed is not None:
             config['seed'] = seed
         
@@ -1054,11 +1197,12 @@ def convert_pdf_folder(input_dir, output_dir, force=False, per_page=False, max_w
             # Submit all pages to thread pool
             with ThreadPoolExecutor(max_workers=max_workers) as executor:
                 futures = []
+                extract_images_flag = getattr(convert_pdf_folder, 'extract_images', False)
                 for page_num in range(num_pages):
                     future = executor.submit(
                         process_single_page,
                         client, pdf_file, page_num, num_pages, pdf_reader, reader_type,
-                        output_path, force, images_output_root, print_lock, rate_limiter, verbose, seed
+                        output_path, force, images_output_root, print_lock, rate_limiter, verbose, seed, extract_images_flag
                     )
                     futures.append((page_num, future))  # Store page_num with future for ordering
                 
@@ -1117,7 +1261,8 @@ def convert_pdf_folder(input_dir, output_dir, force=False, per_page=False, max_w
                 continue
             
             # 2. Configure the Prompt and Model Call
-            system_prompt = create_converter_prompt(pdf_file.name)
+            extract_images_flag = getattr(convert_pdf_folder, 'extract_images', False)
+            system_prompt = create_converter_prompt(pdf_file.name, extract_images=extract_images_flag)
             
             try:
                 # We use a powerful model like gemini-2.5-pro for complex OCR and structure analysis
